@@ -1,13 +1,13 @@
 import io
 import re
 from pathlib import Path
-
+import requests
 import pandas as pd
 import streamlit as st
 
-# ================== SET TEMPLATE PATH LOKAL ==================
-TEMPLATE_PATH = Path(r"https://github.com/WahyuniPutra/test/blob/main/template-import-participants.xlsx")
-# =============================================================
+# ================== TEMPLATE URL (ambil dari GitHub RAW) ==================
+TEMPLATE_URL = "https://raw.githubusercontent.com/WahyuniPutra/test/main/template-import-participants.xlsx"
+# ========================================================================
 
 st.set_page_config(page_title="Import Participants Filler", page_icon="🧑‍🎓", layout="wide")
 st.title("🧑‍🎓 Import Participants Filler")
@@ -23,12 +23,12 @@ def read_first_sheet_stream(file, force_text: bool = False) -> pd.DataFrame:
     bio = io.BytesIO(data)
     return pd.read_excel(bio, sheet_name=0, engine="openpyxl", **kwargs)
 
-def read_first_sheet_path(path: Path, force_text: bool = False) -> pd.DataFrame:
-    """Baca worksheet pertama dari path lokal."""
-    kwargs = {}
-    if force_text:
-        kwargs.update(dict(dtype=str, keep_default_na=False))
-    return pd.read_excel(path, sheet_name=0, engine="openpyxl", **kwargs)
+def read_template_from_url(url: str) -> pd.DataFrame:
+    """Unduh file template dari URL (mis. GitHub raw link)."""
+    st.info("📥 Mengunduh template dari GitHub...")
+    response = requests.get(url)
+    response.raise_for_status()
+    return pd.read_excel(io.BytesIO(response.content), sheet_name=0, engine="openpyxl")
 
 def find_col(df: pd.DataFrame, patterns):
     for col in df.columns:
@@ -76,7 +76,6 @@ def get_values_or_constant(constant_value: str, src_df: pd.DataFrame, patterns_f
 
 def build_output(src_df: pd.DataFrame, tmpl_df: pd.DataFrame,
                  class_code: str, room_code: str, session_code: str, school_name: str):
-    # Deteksi kolom sumber penting
     nisn_col = find_col(src_df, [r"\bnisn\b"])
     name_col = find_col(src_df, [r"\bnama\b", r"\bnama\s*lengkap\b", r"\bnama\s*peserta\b", r"\bname\b"])
     if nisn_col is None:
@@ -84,14 +83,11 @@ def build_output(src_df: pd.DataFrame, tmpl_df: pd.DataFrame,
     if name_col is None:
         raise ValueError(f"Kolom Nama tidak ditemukan di sumber. Kolom tersedia: {list(src_df.columns)}")
 
-    # Ambil apa adanya (leading zero aman karena src_df sudah dtype=str)
     nisn_vals = src_df[nisn_col].fillna("").astype(str).str.strip().tolist()
     name_vals = src_df[name_col].fillna("").astype(str).str.strip().tolist()
 
-    # Samakan panjang template = jumlah peserta
     tmpl_df = ensure_len(tmpl_df, len(nisn_vals))
 
-    # Deteksi kolom di template
     id_col        = find_col(tmpl_df, [r"\bid\b", r"\bid\s*peserta\b", r"\bid[_\s-]*peserta\b"])
     username_col  = find_col(tmpl_df, [r"\busername\b"])
     password_col  = find_col(tmpl_df, [r"\bpassword\b"])
@@ -101,24 +97,19 @@ def build_output(src_df: pd.DataFrame, tmpl_df: pd.DataFrame,
     sekolah_col   = find_col(tmpl_df, [r"\bsekolah\b"])
     sesi_col      = find_col(tmpl_df, [r"\bsesi\b"])
 
-    # Isi kolom utama
     set_col(tmpl_df, id_col,       "ID PESERTA", nisn_vals)
     set_col(tmpl_df, username_col, "USERNAME",   nisn_vals)
     set_col(tmpl_df, password_col, "PASSWORD",   nisn_vals)
     set_col(tmpl_df, name_out_col, "NAMA",       name_vals)
 
-    # KODE KELAS, KODE RUANGAN
     kelas_vals   = get_values_or_constant(class_code, src_df, [r"\bkelas\b", r"\bkode\s*kelas\b"], len(nisn_vals))
     ruangan_vals = get_values_or_constant(room_code,  src_df, [r"\bruang(an)?\b", r"\bkode\s*ruangan\b"], len(nisn_vals))
+    sesi_vals    = get_values_or_constant(session_code, src_df, [r"\bsesi\b"], len(nisn_vals))
+
     set_col(tmpl_df, kelas_col,   "KODE KELAS",   kelas_vals)
     set_col(tmpl_df, ruangan_col, "KODE RUANGAN", ruangan_vals)
-
-    # SESI
-    sesi_vals = get_values_or_constant(session_code, src_df, [r"\bsesi\b"], len(nisn_vals))
-    set_col(tmpl_df, sesi_col, "SESI", sesi_vals)
-
-    # SEKOLAH
-    set_col(tmpl_df, sekolah_col, "SEKOLAH", [school_name] * len(nisn_vals))
+    set_col(tmpl_df, sesi_col,    "SESI",         sesi_vals)
+    set_col(tmpl_df, sekolah_col, "SEKOLAH",      [school_name] * len(nisn_vals))
 
     return tmpl_df
 
@@ -131,41 +122,29 @@ def to_excel_bytes(df: pd.DataFrame, sheet_name: str = "import") -> bytes:
 
 # ================== UI ==================
 st.sidebar.header("⚙️ Pengaturan")
-uploaded_src = st.sidebar.file_uploader("1) Upload Excel Sumber (Download_Biodata…)", type=["xlsx"])
+uploaded_src = st.sidebar.file_uploader("1️⃣ Upload Excel Sumber (Download_Biodata…)", type=["xlsx"])
 
-# Tampilkan status template path
-with st.sidebar.expander("📄 Template yang dipakai (fixed)"):
-    st.code(str(TEMPLATE_PATH))
-    if not TEMPLATE_PATH.exists():
-        st.error("Template tidak ditemukan di path tersebut. Pastikan file ada & path benar.")
-
-# Parameter konstan
-class_code = st.sidebar.text_input("KODE KELAS (opsional, biarkan kosong untuk ambil dari sumber)", value="")
-room_code  = st.sidebar.text_input("KODE RUANGAN (opsional, biarkan kosong untuk ambil dari sumber)", value="")
-session_code = st.sidebar.text_input("SESI (opsional, biarkan kosong untuk ambil dari sumber)", value="")
-
-# Sekolah: default ditebak dari nama file sumber
+class_code   = st.sidebar.text_input("KODE KELAS", value="")
+room_code    = st.sidebar.text_input("KODE RUANGAN", value="")
+session_code = st.sidebar.text_input("SESI", value="")
 default_school = ""
 if uploaded_src is not None:
-    default_school = derive_school_from_filename(uploaded_src.name) or ""
+    default_school = derive_school_from_filename(uploaded_src.name)
 school_name = st.sidebar.text_input("SEKOLAH", value=default_school)
 
-st.markdown("#### 1) Upload **Excel sumber** di sidebar. Template otomatis dibaca dari path lokal di atas, lalu klik **Generate**.")
+st.markdown("#### 📄 Template otomatis diunduh dari:")
+st.code(TEMPLATE_URL)
 
 generate = st.button("🚀 Generate Hasil Import")
 
 if generate:
     if not uploaded_src:
-        st.error("Mohon upload **Excel Sumber** terlebih dahulu.")
-    elif not TEMPLATE_PATH.exists():
-        st.error("Template tidak ditemukan. Periksa path di sidebar.")
+        st.error("Mohon upload file sumber terlebih dahulu.")
     else:
         try:
-            # Baca sumber (paksa string) & template (normal) dari PATH LOKAL
             src_df = read_first_sheet_stream(uploaded_src, force_text=True)
-            tmpl_df = read_first_sheet_path(TEMPLATE_PATH, force_text=False)
+            tmpl_df = read_template_from_url(TEMPLATE_URL)
 
-            # Build output
             out_df = build_output(
                 src_df=src_df,
                 tmpl_df=tmpl_df.copy(),
@@ -175,40 +154,26 @@ if generate:
                 school_name=school_name,
             )
 
-            # Preview
-            st.success("Berhasil menyusun data import.")
+            st.success("✅ Berhasil membuat file hasil import!")
             c1, c2 = st.columns(2)
             with c1:
-                st.subheader("👈 Preview Sumber (top 20)")
-                st.dataframe(src_df.head(20), use_container_width=True)
+                st.subheader("👈 Preview Sumber (20 baris)")
+                st.dataframe(src_df.head(20))
             with c2:
-                st.subheader("👉 Preview Hasil Import (top 20)")
-                st.dataframe(out_df.head(20), use_container_width=True)
+                st.subheader("👉 Preview Hasil Import (20 baris)")
+                st.dataframe(out_df.head(20))
 
-            # Unduh
-            xlsx_bytes = to_excel_bytes(out_df, sheet_name="import")
+            xlsx_bytes = to_excel_bytes(out_df, "import")
             suggested_name = f"{school_name or 'hasil'}_filled.xlsx"
             st.download_button(
-                label="💾 Download Excel Hasil",
+                "💾 Download Excel Hasil",
                 data=xlsx_bytes,
                 file_name=suggested_name,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
             )
 
-            with st.expander("ℹ️ Catatan & Deteksi Otomatis"):
-                st.markdown("""
-- **NISN** → **USERNAME**, **PASSWORD**, **ID PESERTA** (leading zero aman).
-- **NAMA** → dari kolom `Nama / Nama Lengkap / Nama Peserta / Name`.
-- **KODE KELAS**, **KODE RUANGAN**, **SESI**:
-  - Jika input konstanta di sidebar diisi → pakai konstanta untuk semua baris.
-  - Jika dikosongkan, dan kolomnya ada di sumber → pakai data sumber.
-  - Jika tidak ada keduanya → dibuat kolomnya tapi nilainya kosong.
-- **SEKOLAH** → dari field di sidebar (default ditebak dari nama file sumber).
-                """)
         except Exception as e:
             st.error(f"Gagal memproses: {e}")
 
-# Footer
 st.markdown("---")
 st.caption("Made with ❤️ Streamlit • Pandas • openpyxl — menjaga NISN dengan leading zero tetap utuh.")
