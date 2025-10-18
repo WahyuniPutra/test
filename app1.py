@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 # ================== SET TEMPLATE PATH LOKAL ==================
-TEMPLATE_PATH = Path(r"C:\Users\UsEr\Downloads\tess\template-import-participants.xlsx")
+TEMPLATE_PATH = Path(r"https://github.com/WahyuniPutra/test/blob/main/template-import-participants.xlsx")
 # =============================================================
 
 st.set_page_config(page_title="Import Participants Filler", page_icon="🧑‍🎓", layout="wide")
